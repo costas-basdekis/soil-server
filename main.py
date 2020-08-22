@@ -8,7 +8,6 @@ import bluetooth as bt
 
 import bluetoothctl
 
-BLUETOOTH_PATTERN = re.compile(r'^SOIL-\d+$')
 SLEEP_TIME = datetime.timedelta(seconds=1)
 SEARCH_INTERVAL = datetime.timedelta(seconds=10)
 
@@ -42,12 +41,15 @@ class DeviceServer:
 
 
 class Devices:
-    def __init__(self, retries=1):
+    BLUETOOTH_PATTERN = re.compile(r'^SOIL-\d+$')
+
+    def __init__(self, retries=1, pattern=BLUETOOTH_PATTERN):
         self.devices = set()
         self.by_socket = {}
         self.by_address = {}
         self.by_name = {}
         self.retries = retries
+        self.pattern = pattern
         self.discovery = BluetoothDiscovery()
 
     def __enter__(self):
@@ -77,9 +79,9 @@ class Devices:
         for device in self.devices:
             self.close(device)
 
-    def find_and_connect(self, pattern=BLUETOOTH_PATTERN):
+    def find_and_connect(self):
         self.discovery.find_and_connect(
-            self, pattern=pattern, retries=self.retries)
+            self, pattern=self.pattern, retries=self.retries)
 
     def receive_data(self):
         data = {
@@ -176,7 +178,7 @@ class BluetoothDiscovery:
         self.bctl = bluetoothctl.Bluetoothctl()
         self.bctl.start_scan()
 
-    def find_and_connect(self, devices, pattern=BLUETOOTH_PATTERN, retries=1):
+    def find_and_connect(self, devices, pattern, retries=1):
         print("Finding devices")
         mac_addresses_by_name = self.get_mac_addresses_by_name()
         soil_addresses_and_names = sum((
