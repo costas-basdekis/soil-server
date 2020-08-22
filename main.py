@@ -18,12 +18,12 @@ BT_ERROR_HOST_IS_DOWN = 112
 
 
 class DeviceServer:
-    def __init__(self):
-        self.devices = Devices()
+    def __init__(self, retries=1):
+        self.devices = Devices(retries=retries)
 
     @classmethod
-    def start_new_server(cls):
-        server = cls()
+    def start_new_server(cls, retries=1):
+        server = cls(retries=retries)
         server.loop()
 
     def loop(self):
@@ -42,11 +42,12 @@ class DeviceServer:
 
 
 class Devices:
-    def __init__(self):
+    def __init__(self, retries=1):
         self.devices = set()
         self.by_socket = {}
         self.by_address = {}
         self.by_name = {}
+        self.retries = retries
 
     def __enter__(self):
         return self
@@ -76,7 +77,8 @@ class Devices:
             self.close(device)
 
     def find_and_connect(self, pattern=BLUETOOTH_PATTERN):
-        BluetoothDiscovery().find_and_connect(self, pattern=pattern)
+        BluetoothDiscovery().find_and_connect(
+            self, pattern=pattern, retries=self.retries)
 
     def receive_data(self):
         data = {
@@ -106,6 +108,19 @@ class Device:
         self.name = name
         self.buffer = buffer
         self.connected = True
+
+    @classmethod
+    def create(cls, address, name):
+        socket = bt.BluetoothSocket(bt.RFCOMM)
+        try:
+            socket.connect((address, 1))
+        except bt.BluetoothError as e:
+            if e.errno == BT_ERROR_HOST_IS_DOWN:
+                error = "Could not connect to {}: host is down".format(address)
+                return None, error
+            raise
+        socket.setblocking(False)
+        return cls(socket, address, name), None
 
     def receive_data(self,):
         new_data = self.get_new_data()
@@ -157,7 +172,7 @@ class Device:
 
 
 class BluetoothDiscovery:
-    def find_and_connect(self, devices, pattern=BLUETOOTH_PATTERN):
+    def find_and_connect(self, devices, pattern=BLUETOOTH_PATTERN, retries=1):
         print("Finding devices")
         mac_addresses_by_name = self.get_mac_addresses_by_name()
         soil_addresses_and_names = sum((
@@ -169,7 +184,7 @@ class BluetoothDiscovery:
             len(mac_addresses_by_name), len(soil_addresses_and_names),
             pattern.pattern))
         connections_created = self.create_connections(
-            devices, soil_addresses_and_names)
+            devices, soil_addresses_and_names, retries=retries)
         print("Connected to {} devices".format(connections_created))
 
     def get_mac_addresses_by_name(self):
@@ -207,25 +222,26 @@ class BluetoothDiscovery:
         }
         return mac_addresses_by_name
 
-    def create_connections(self, devices, soil_addresses_and_names):
+    def create_connections(self, devices, soil_addresses_and_names, retries=1):
         connections_created = 0
         for address, name in soil_addresses_and_names:
-            socket = bt.BluetoothSocket(bt.RFCOMM)
-            try:
-                socket.connect((address, 1))
-            except bt.BluetoothError as e:
-                if e.errno == BT_ERROR_HOST_IS_DOWN:
-                    print("Could not connect to {}: host is down".format(
-                        address))
-                    continue
-                raise
-            socket.setblocking(False)
-            print("Connected to {}".format(address))
-            devices.add(Device(socket, address, name))
-            connections_created += 1
+            for retry in range(retries):
+                if self.create_connection(devices, address, name):
+                    connections_created += 1
+                    break
 
         return connections_created
 
+    def create_connection(self, devices, address, name):
+        device, error = Device.create(address, name)
+        if error:
+            print(error)
+            return False
+        print("Connected to {}".format(device.address))
+        devices.add(device)
+
+        return True
+
 
 if __name__ == '__main__':
-    DeviceServer.start_new_server()
+    DeviceServer.start_new_server(retries=5)
