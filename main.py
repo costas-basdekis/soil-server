@@ -48,6 +48,7 @@ class Devices:
         self.by_address = {}
         self.by_name = {}
         self.retries = retries
+        self.discovery = BluetoothDiscovery()
 
     def __enter__(self):
         return self
@@ -77,7 +78,7 @@ class Devices:
             self.close(device)
 
     def find_and_connect(self, pattern=BLUETOOTH_PATTERN):
-        BluetoothDiscovery().find_and_connect(
+        self.discovery.find_and_connect(
             self, pattern=pattern, retries=self.retries)
 
     def receive_data(self):
@@ -171,6 +172,10 @@ class Device:
 
 
 class BluetoothDiscovery:
+    def __init__(self):
+        self.bctl = bluetoothctl.Bluetoothctl()
+        self.bctl.start_scan()
+
     def find_and_connect(self, devices, pattern=BLUETOOTH_PATTERN, retries=1):
         print("Finding devices")
         mac_addresses_by_name = self.get_mac_addresses_by_name()
@@ -192,9 +197,7 @@ class BluetoothDiscovery:
     def get_mac_addresses_by_name_with_bctl(self):
         def sort_by_name(device):
             return device['name']
-        bctl = bluetoothctl.Bluetoothctl()
-        bctl.start_scan()
-        devices = bctl.get_paired_devices()
+        devices = self.bctl.get_paired_devices()
         mac_addresses_by_name = {
             name: [device['mac_address'] for device in grouped_devices]
             for name, grouped_devices
