@@ -167,7 +167,6 @@ class Device:
     def close(self):
         self.socket.close()
         self.connected = False
-        self.socket = None
         self.buffer = None
 
 
