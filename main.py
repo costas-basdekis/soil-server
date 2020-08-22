@@ -199,6 +199,7 @@ class Device:
         if self.is_socket_still_connected():
             return
         print("{} disconnected".format(self.address))
+        self.close()
 
     def is_socket_still_connected(self):
         try:
