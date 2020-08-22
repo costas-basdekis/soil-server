@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 import datetime
 import itertools
+import queue
 import re
+import threading
 import time
 
 import bluetooth as bt
 
 import bluetoothctl
-
-SLEEP_TIME = datetime.timedelta(seconds=1)
-SEARCH_INTERVAL = datetime.timedelta(seconds=10)
 
 BT_ERROR_NO_SUCH_DEVICE = 19
 BT_ERROR_DISCONNECTED = 107
@@ -17,8 +16,15 @@ BT_ERROR_HOST_IS_DOWN = 112
 
 
 class DeviceServer:
+    SLEEP_TIME = datetime.timedelta(seconds=1)
+    SEARCH_INTERVAL = datetime.timedelta(seconds=10)
+
     def __init__(self, retries=1):
         self.devices = Devices(retries=retries)
+        self.discovery_thread = threading.Thread(
+            target=self.threaded_find_and_connect, daemon=True)
+        self.should_be_discovering = False
+        self.new_devices = queue.Queue()
 
     @classmethod
     def start_new_server(cls, retries=1):
@@ -26,14 +32,31 @@ class DeviceServer:
         server.loop()
 
     def loop(self):
-        with self.devices:
-            while True:
-                self.devices.find_and_connect()
-                time_since_last_search = datetime.timedelta(seconds=0)
-                while time_since_last_search < SEARCH_INTERVAL:
+        self.should_be_discovering = True
+        if not self.discovery_thread.is_alive():
+            self.discovery_thread.start()
+        try:
+            with self.devices:
+                while True:
                     self.receive_and_handle_data()
-                    time.sleep(SLEEP_TIME.total_seconds())
-                    time_since_last_search += SLEEP_TIME
+                    self.add_new_devices()
+        finally:
+            self.should_be_discovering = False
+
+    def threaded_find_and_connect(self):
+        while self.should_be_discovering:
+            try:
+                new_devices = self.devices.find_and_connect(False)
+                for device in new_devices:
+                    self.new_devices.put(device)
+            except Exception as e:
+                print("Error while discovering: {}".format(e))
+            time.sleep(self.SEARCH_INTERVAL.total_seconds())
+
+    def add_new_devices(self):
+        while not self.new_devices.empty():
+            device = self.new_devices.get(block=False)
+            self.devices.add(device)
 
     def receive_and_handle_data(self):
         data = self.devices.receive_data()
@@ -58,6 +81,10 @@ class Devices:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close_all()
 
+    def add_many(self, devices):
+        for device in devices:
+            self.add(device)
+
     def add(self, device):
         self.devices.add(device)
         self.by_socket[device.socket] = device
@@ -79,9 +106,24 @@ class Devices:
         for device in list(self.devices):
             self.close(device)
 
-    def find_and_connect(self):
-        self.discovery.find_and_connect(
-            self, pattern=self.pattern, retries=self.retries)
+    def find_and_connect(self, add=True):
+        new_devices = self.discovery.find_and_connect(
+            pattern=self.pattern,
+            ignore_addresses=self.get_connected_addresses(),
+            retries=self.retries,
+        )
+
+        if add:
+            self.add_many(new_devices)
+
+        return new_devices
+
+    def get_connected_addresses(self):
+        return [
+            device.address
+            for device in self.devices
+            if device.connected
+        ]
 
     def receive_data(self):
         data = {
@@ -178,20 +220,26 @@ class BluetoothDiscovery:
         self.bctl = bluetoothctl.Bluetoothctl()
         self.bctl.start_scan()
 
-    def find_and_connect(self, devices, pattern, retries=1):
+    def find_and_connect(self, pattern, ignore_addresses=(), retries=1):
         print("Finding devices")
         mac_addresses_by_name = self.get_mac_addresses_by_name()
         soil_addresses_and_names = sum((
-            [(address, name) for address in addresses]
+            [
+                (address, name)
+                for address in addresses
+                if address not in ignore_addresses
+            ]
             for name, addresses in mac_addresses_by_name.items()
             if pattern.match(name)
         ), [])
         print("Got {} names, {} matching {}".format(
             len(mac_addresses_by_name), len(soil_addresses_and_names),
             pattern.pattern))
-        connections_created = self.create_connections(
-            devices, soil_addresses_and_names, retries=retries)
-        print("Connected to {} devices".format(connections_created))
+        new_devices = self.create_connections(
+            soil_addresses_and_names, retries=retries)
+        print("Connected to {} new devices".format(len(new_devices)))
+
+        return new_devices
 
     def get_mac_addresses_by_name(self):
         return self.get_mac_addresses_by_name_with_bctl()
@@ -226,25 +274,25 @@ class BluetoothDiscovery:
         }
         return mac_addresses_by_name
 
-    def create_connections(self, devices, soil_addresses_and_names, retries=1):
-        connections_created = 0
+    def create_connections(self, soil_addresses_and_names, retries=1):
+        new_devices = []
         for address, name in soil_addresses_and_names:
             for retry in range(retries):
-                if self.create_connection(devices, address, name):
-                    connections_created += 1
+                device = self.create_connection(address, name)
+                if device:
+                    new_devices.append(device)
                     break
 
-        return connections_created
+        return new_devices
 
-    def create_connection(self, devices, address, name):
+    def create_connection(self, address, name):
         device, error = Device.create(address, name)
         if error:
             print(error)
-            return False
+            return None
         print("Connected to {}".format(device.address))
-        devices.add(device)
 
-        return True
+        return device
 
 
 if __name__ == '__main__':
