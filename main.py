@@ -76,7 +76,7 @@ class Devices:
         self.remove(device)
 
     def close_all(self):
-        for device in self.devices:
+        for device in list(self.devices):
             self.close(device)
 
     def find_and_connect(self):
