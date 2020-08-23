@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import datetime
 import itertools
+import json
 import queue
 import re
 import threading
 import time
 
 import bluetooth as bt
+import requests
 
 import bluetoothctl
 
@@ -18,6 +20,7 @@ BT_ERROR_HOST_IS_DOWN = 112
 class DeviceServer:
     SLEEP_TIME = datetime.timedelta(seconds=1)
     SEARCH_INTERVAL = datetime.timedelta(seconds=10)
+    MEASUREMENTS_API_URL = "http://localhost:8000/api/measurements/"
 
     def __init__(self, retries=1):
         self.devices = Devices(retries=retries)
@@ -61,6 +64,72 @@ class DeviceServer:
     def receive_and_handle_data(self):
         data = self.devices.receive_data()
         self.devices.print_data(data)
+        try:
+            measurements = self.parse_data(data)
+            self.log_measurements(measurements)
+        except Exception as e:
+            print("Error while parsing and logging measurements: {}".format(e))
+
+    def parse_data(self, data):
+        measurements = []
+        received_at = datetime.datetime.now()
+        for device, lines in data.items():
+            for line in lines:
+                error, device_measurements = self.parse_device_line(
+                    device, line, received_at=received_at)
+                if error:
+                    print(error)
+                    continue
+                measurements.extend(device_measurements)
+
+        return measurements
+
+    RE_PARSE_LINE = re.compile(r'^\[(\d+)\[(.*)]\1]$')
+
+    def parse_device_line(self, device, line, received_at=None):
+        # [100[{"id": 100, "moisture": 63, "flow": 3053, "millis": 140183}]100
+        match = self.RE_PARSE_LINE.match(line)
+        if not match:
+            return "Could not match line", None
+
+        data_json = match.group(2)
+        try:
+            data = json.loads(data_json)
+        except Exception as e:
+            return "Could not parse JSON: {}".format(e), None
+
+        if received_at is None:
+            received_at = datetime.datetime.now()
+        received_at_str = received_at.isoformat()
+        device_name = device.name
+        try:
+            raw_measurements = data['measurements']
+            controller_id = data['controller_id']
+
+            measurements = [
+                {
+                    "controller_id": controller_id,
+                    "sensor_id": raw_measurement['sensor_id'],
+                    "bluetooth_name": device_name,
+                    "plant_id": raw_measurement['plant_id'],
+                    "moisture": raw_measurement['moisture'],
+                    "received_at": received_at_str,
+                }
+                for raw_measurement in raw_measurements
+            ]
+        except Exception as e:
+            return "Could not parse data: {}".format(e), None
+
+        return None, measurements
+
+    def log_measurements(self, measurements):
+        for measurement in measurements:
+            response = requests.post(
+                self.MEASUREMENTS_API_URL, data=measurement)
+            if not response.ok:
+                print("Error {} logging with data {}: {}".format(
+                    response.status_code, json.dumps(measurement),
+                    response.text))
 
 
 class Devices:
