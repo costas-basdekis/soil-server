@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import datetime
 import itertools
 import json
@@ -6,6 +7,7 @@ import queue
 import re
 import threading
 import time
+from urllib.parse import urljoin
 
 import bluetooth as bt
 import requests
@@ -20,18 +22,25 @@ BT_ERROR_HOST_IS_DOWN = 112
 class DeviceServer:
     SLEEP_TIME = datetime.timedelta(seconds=1)
     SEARCH_INTERVAL = datetime.timedelta(seconds=10)
-    MEASUREMENTS_API_URL = "http://localhost:8000/api/measurements/"
+    DEFAULT_API_URL = "http://localhost:8000/api/"
+    MEASUREMENTS_API_PATH = "measurements/"
 
-    def __init__(self, retries=1):
+    def __init__(self, retries=1, api_url=None):
         self.devices = Devices(retries=retries)
         self.discovery_thread = threading.Thread(
             target=self.threaded_find_and_connect, daemon=True)
         self.should_be_discovering = False
         self.new_devices = queue.Queue()
+        if api_url is None:
+            self.api = self.DEFAULT_API_URL
+        else:
+            self.api = api_url
+        self.measurements_api_url = \
+            urljoin(f"{api_url}/", self.MEASUREMENTS_API_PATH)
 
     @classmethod
-    def start_new_server(cls, retries=1):
-        server = cls(retries=retries)
+    def start_new_server(cls, retries=1, api_url=None):
+        server = cls(retries=retries, api_url=api_url)
         server.loop()
 
     def loop(self):
@@ -125,7 +134,7 @@ class DeviceServer:
     def log_measurements(self, measurements):
         for measurement in measurements:
             response = requests.post(
-                self.MEASUREMENTS_API_URL, data=measurement)
+                self.measurements_api_url, data=measurement)
             if not response.ok:
                 print("Error {} logging with data {}: {}".format(
                     response.status_code, json.dumps(measurement),
@@ -365,5 +374,14 @@ class BluetoothDiscovery:
         return device
 
 
+def main():
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument(
+        '--api-url', help='The API base URL',
+        default=DeviceServer.DEFAULT_API_URL)
+    args = parser.parse_args()
+    DeviceServer.start_new_server(retries=5, api_url=args.api_url)
+
+
 if __name__ == '__main__':
-    DeviceServer.start_new_server(retries=5)
+    main()
