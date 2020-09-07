@@ -81,8 +81,7 @@ class DeviceServer:
 
     def parse_data(self, data):
         measurements = []
-        received_at = datetime.datetime.now()
-        for device, lines in data.items():
+        for device, (lines, received_at) in data.items():
             for line in lines:
                 error, device_measurements = self.parse_device_line(
                     device, line, received_at=received_at)
@@ -205,7 +204,7 @@ class Devices:
 
     def receive_data(self):
         data = {
-            device: device.receive_data()
+            device: (device.receive_data(), datetime.datetime.now())
             for device in self.devices
             if device.connected
         }
@@ -220,7 +219,7 @@ class Devices:
         return data
 
     def print_data(self, data):
-        for device, lines in data.items():
+        for device, (lines, _) in data.items():
             device.print_data(lines)
 
 
