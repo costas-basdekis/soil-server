@@ -37,6 +37,7 @@ class DeviceServer:
             self.api = api_url
         self.measurements_api_url = \
             urljoin(f"{api_url}/", self.MEASUREMENTS_API_PATH)
+        self.devices_best_startup_estimates = {}
 
     @classmethod
     def start_new_server(cls, retries=1, api_url=None):
@@ -95,7 +96,8 @@ class DeviceServer:
     RE_PARSE_LINE = re.compile(r'^\[(\d+)\[(.*)]\1]$')
 
     def parse_device_line(self, device, line, received_at=None):
-        # [100[{"id": 100, "moisture": 63, "flow": 3053, "millis": 140183}]100
+        # [100[{"controller_id": 100, "measurements":[{"sensor_id": 1,
+        # "plant_id": 1, "moisture": 70}], "flow": 7991, "millis": 1109147}]100]
         match = self.RE_PARSE_LINE.match(line)
         if not match:
             return "Could not match line", None
@@ -113,6 +115,12 @@ class DeviceServer:
         try:
             raw_measurements = data['measurements']
             controller_id = data['controller_id']
+            time_since_startup = datetime.timedelta(milliseconds=data['millis'])
+            device_startup_estimate = received_at - time_since_startup
+            device_best_startup_estimate = \
+                self.get_device_best_startup_estimate(
+                    data['controller_id'], device_startup_estimate)
+            taken_at = device_best_startup_estimate + time_since_startup
 
             measurements = [
                 {
@@ -122,6 +130,7 @@ class DeviceServer:
                     "plant_id": raw_measurement['plant_id'],
                     "moisture": raw_measurement['moisture'],
                     "received_at": received_at_str,
+                    "taken_at": taken_at,
                 }
                 for raw_measurement in raw_measurements
             ]
@@ -138,6 +147,16 @@ class DeviceServer:
                 print("Error {} logging with data {}: {}".format(
                     response.status_code, json.dumps(measurement),
                     response.text))
+
+    def get_device_best_startup_estimate(self, controller_id,
+                                         device_startup_estimate):
+        current_device_best_startup_estimate = \
+            self.devices_best_startup_estimates\
+            .setdefault(controller_id, device_startup_estimate)
+        self.devices_best_startup_estimates[controller_id] = min(
+            current_device_best_startup_estimate, device_startup_estimate)
+
+        return self.devices_best_startup_estimates[controller_id]
 
 
 class Devices:
